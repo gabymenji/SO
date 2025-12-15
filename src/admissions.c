@@ -21,19 +21,18 @@ int main(){
         return 1;
     }
 
-    printf("Configuration Loaded:\n");
-    printf("TRIAGE_QUEUE_MAX: %d\n", cfg.TRIAGE_QUEUE_MAX);
-    printf("TRIAGE: %d\n", cfg.TRIAGE);
-    printf("DOCTORS: %d\n", cfg.DOCTORS);
-    printf("SHIFT_LENGTH: %d\n", cfg.SHIFT_LENGTH);
-    printf("MSQ_WAIT_MAX: %d\n", cfg.MSQ_WAIT_MAX);
-
     if (log_init() != 0){
         fprintf(stderr, "Error initializing log. Exiting.\n");
         return 1;
     }
 
-	log_message("Admission Server started."); // Exemplo
+	log_message("Admission Server started successfully.");
+	log_message("Configutation Loaded");
+	log_message("TRIAGE_QUEUE_MAX: %d", cfg.TRIAGE_QUEUE_MAX);
+	log_message("TRIAGE: %d", cfg.TRIAGE);
+    log_message("DOCTORS: %d", cfg.DOCTORS);
+	log_message("SHIFT_LENGTH: %d", cfg.SHIFT_LENGTH);
+	log_message("MSQ_WAIT_MAX: %d", cfg.MSQ_WAIT_MAX);
 
 
     create_named_pipe();
@@ -41,7 +40,8 @@ int main(){
     create_shared_memory();
 
     if (queue_init(&triage_queue, cfg.TRIAGE_QUEUE_MAX) != 0){
-        fprintf(stderr, "Error initializing triage queue.\n");
+		log_message("Error initializing triage queue.");
+        log_cleanup();
         return 1;
     }
 
@@ -49,12 +49,11 @@ int main(){
 
     spawn_doctors(cfg.DOCTORS);
 
-    printf("Server running... Press Ctrl+C to stop.\n");
+    log_message("Server running... Waiting for SIGINT to stop.");
 
     int fd = open(PIPE_NAME, O_RDONLY);
     if (fd == -1){
-        perror("open input_pipe");
-
+        log_message("ERROR opening input_pipe: %s", strerror(errno));
     } else {
         char line[256];
         FILE *pipe_fp = fdopen(fd, "r");
@@ -72,10 +71,10 @@ int main(){
                 pat.priority = pr;
 
                 if (queue_push(&triage_queue, &pat) == 0){
-                    printf("Pacient %s entered the triage queue.\n", pat.name);
+                    log_message("Pacient %s entered the triage queue.", pat.name);
 
                 } else {
-                    printf("Triage queue full. Patient %s descarted.\n", pat.name);
+                    log_message("Triage queue full. Patient %s discarded.", pat.name);
                 }
             }
 

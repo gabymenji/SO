@@ -4,9 +4,11 @@
 #include <sys/wait.h>
 #include <sys/msg.h>
 #include <string.h>
+#include <errno.h>
 #include "doctor.h"
 #include "system_ipc.h"
 #include "patient.h"
+#include "log.h"
 
 typedef struct {
     long mtype;
@@ -14,20 +16,20 @@ typedef struct {
 } MsgBuf;
 
 void doctor_process(int id) {
-    printf("[DOCTOR %d] Started (PID=%d)\n", id, getpid());
+    log_message("[DOCTOR %d] Started (PID=%d)", id, getpid());
 
     MsgBuf msg;
 
     while (1) {
 
         if (msgrcv(msq_id, &msg, sizeof(Patient), 0, 0) == -1) {
-            perror("[DOCTOR] msgrcv");
+            log_message("[DOCTOR %d] ERROR msgrcv: %s", id, strerror(errno));
             exit(1);
         }
 
         Patient p = msg.patient;
 
-        printf("[DOCTOR %d] Attending %s (%d ms)\n", id, p.name, p.attend_time);
+        log_message("[DOCTOR %d] START Attending. Patient %s (Nº Chegada: %d, Prioridade: %d, Tempo Atendimento: %d ms)", id, p.name, p.num_arrival, p.priority, p.attend_time);
 
         // Simulate attending the patient
         usleep(p.attend_time * 1000);
@@ -37,7 +39,7 @@ void doctor_process(int id) {
             stats->attended++;
         }
 
-        printf("[DOCTOR %d] Finished %s\n", id, p.name);
+        log_message("[DOCTOR %d] Finished %s", id, p.name);
     }
 }
 
@@ -46,7 +48,7 @@ void spawn_doctors(int n){
         pid_t pid = fork();
 
         if (pid < 0){
-            perror("[DOCTOR] fork");
+            log_message("[DOCTOR] ERROR fork: %s", strerror(errno));
             exit(1);
         }
 
@@ -55,6 +57,6 @@ void spawn_doctors(int n){
             _exit(0);
 
         }
-        printf("[DOCTOR] Created doctor %d with PID %d\n", i, pid);
+        log_message("[DOCTOR] Created doctor %d with PID %d", i, pid);
     }
 }

@@ -5,8 +5,10 @@
 #include <time.h>
 #include <stdlib.h>
 #include <sys/msg.h>
+#include <errno.h>
 #include "triage.h"
 #include "system_ipc.h"
+#include "log.h"
 
 typedef struct{
     long mtype;
@@ -83,7 +85,7 @@ int queue_pop(TriageQueue *q, Patient *out){
 
 void *triage_worker(void *arg){
     int id = (int)(long)arg;
-    printf("[TRIAGE] Thread %d started.\n", id);
+    log_message("[TRIAGE %d] Thread started.", id);
 
     Patient p;
     while(triage_running){
@@ -92,8 +94,7 @@ void *triage_worker(void *arg){
             struct timespec ts;
             clock_gettime(CLOCK_REALTIME, &ts);
             p.arrival_time = ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
-
-            printf("[TRIAGE] Thread %d triaging patient %s (triage_time=%d ms).\n", id, p.name, p.triage_time);
+			log_message("[TRIAGE %d] START Triaging patient %s (Nº Chegada: %d, Tempo Triagem: %d ms).", id, p.name, p.num_arrival, p.triage_time);
             //simula o tempo de triagem
             usleep(p.triage_time * 1000);
 
@@ -105,13 +106,13 @@ void *triage_worker(void *arg){
             }
             //enviar para a message queue MSQ (implementar em system_ipc)
             MsgBuf msg;
-            msg.mtype = 1;
+            msg.mtype = p.priority;
             msg.patient = p;
 
             if (msgsnd(msq_id, &msg, sizeof(Patient), 0) == -1) {
-                perror("[TRIAGE] msgsnd");
+                log_message("[TRIAGE %d] ERROR msgsnd sending %s: %s", id, p.name, strerror(errno));
             } else {
-                printf("[TRIAGE] Thread %d sent %s to MSQ.\n", id, p.name);
+                log_message("[TRIAGE %d] END Triaging. Patient %s sent to MSQ with Priority %d.", id, p.name, p.priority);
             }
 
         } else {
@@ -122,7 +123,7 @@ void *triage_worker(void *arg){
 
     }
 
-    printf("[TRIAGE] Thread %d exiting.\n", id);
+    log_message("[TRIAGE %d] Thread exiting.", id);
     return NULL;
 }
 
@@ -135,7 +136,7 @@ void start_triage_threads(int n){
 
     for (int i = 0; i < n; i++){
         pthread_create(&triage_threads[i], NULL, triage_worker, (void *)(long)i);
-        printf("[TRIAGE] Created thread %d.\n", i);
+        log_message("[TRIAGE] Created thread %d.", i);
     }
 
 }
