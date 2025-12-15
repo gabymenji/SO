@@ -8,6 +8,7 @@
 #include "system_ipc.h"
 #include "triage.h"
 #include "doctor.h"
+#include "log.h"
 
 
 
@@ -26,6 +27,13 @@ int main(){
     printf("DOCTORS: %d\n", cfg.DOCTORS);
     printf("SHIFT_LENGTH: %d\n", cfg.SHIFT_LENGTH);
     printf("MSQ_WAIT_MAX: %d\n", cfg.MSQ_WAIT_MAX);
+
+    if (log_init() != 0){
+        fprintf(stderr, "Error initializing log. Exiting.\n");
+        return 1;
+    }
+
+	log_message("Admission Server started."); // Exemplo
 
 
     create_named_pipe();
@@ -73,5 +81,8 @@ int main(){
 
         }
     }
+
+	log_message("Admission Server finishing.");
+	log_cleanup(); // Limpar o MMF e fechar
 
 }
