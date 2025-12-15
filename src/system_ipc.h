@@ -16,3 +16,7 @@ void create_message_queue();
 
 void cleanup_ipc();
 void detach_shared_memory();
+
+void shm_lock();
+void shm_unlock();
+void display_statistics();

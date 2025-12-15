@@ -90,21 +90,29 @@ void *triage_worker(void *arg){
     Patient p;
     while(triage_running){
         if (queue_pop(&triage_queue, &p) == 0){
-            // Timestamp Inicio de triagem(exemplo)
-            struct timespec ts;
-            clock_gettime(CLOCK_REALTIME, &ts);
-            p.arrival_time = ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
-			log_message("[TRIAGE %d] START Triaging patient %s (Nº Chegada: %d, Tempo Triagem: %d ms).", id, p.name, p.num_arrival, p.triage_time);
-            //simula o tempo de triagem
+
+            // Obter o tempo de início da triagem
+            time_t triage_start_time = time(NULL);
+
+            // Calcular o Tempo de Espera (Wait Time)
+            long wait_time = triage_start_time - p.arrival_time;
+
+            log_message("[TRIAGE %d] START Triaging patient %s (ID: %d, Wait: %ld s, Triage Time: %d ms).", id, p.name, p.num_arrival, wait_time, p.triage_time);
+
+            // Simula o tempo de triagem (bloqueio da thread)
             usleep(p.triage_time * 1000);
 
-            //aqui: atribui prioridade
-            //update stats
+            // SINCRONIZAÇÃO E ATUALIZAÇÃO DE ESTATÍSTICAS
+            shm_lock();
+
             if (stats != NULL){
                 stats->triaged++;
-
+                stats->total_wait_time += wait_time;
             }
-            //enviar para a message queue MSQ (implementar em system_ipc)
+
+            shm_unlock();
+
+            // Enviar paciente para a Message Queue (MSQ)
             MsgBuf msg;
             msg.mtype = p.priority;
             msg.patient = p;
@@ -116,11 +124,9 @@ void *triage_worker(void *arg){
             }
 
         } else {
-            // if queue_pop returns -1, we are finishing
+            // Se queue_pop retorna -1, estamos a terminar
             break;
-
         }
-
     }
 
     log_message("[TRIAGE %d] Thread exiting.", id);

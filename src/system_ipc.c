@@ -6,9 +6,11 @@
 #include <errno.h>
 #include <unistd.h>
 #include <string.h>
+#include <semaphore.h>
 #include "system_ipc.h"
 #include "patient.h"
 #include "log.h"
+
 
 int shm_id = -1;
 Statistics *stats = NULL;
@@ -39,8 +41,18 @@ void create_shared_memory(){
         exit(1);
     }
 
+    // 1: pshared (1 = partilhado entre processos), 0: valor inicial
+    if (sem_init(&stats->shm_mutex, 1, 1) == -1) {
+        log_message("[IPC] ERROR sem_init for SHM mutex: %s", strerror(errno));
+        detach_shared_memory();
+        exit(1);
+    }
+
     stats->triaged = 0;
     stats->attended = 0;
+    stats->total_triage_time = 0;
+    stats->total_wait_time = 0;
+    stats->total_attend_time = 0;
 
     log_message("[IPC] Shared memory created with ID: %d", shm_id);
 }
@@ -61,8 +73,33 @@ void detach_shared_memory(){
     }
 }
 
+void shm_lock() {
+    if (stats != NULL) {
+        if (sem_wait(&stats->shm_mutex) == -1) {
+            // Em caso de interrupção (ex: SIGINT), o sem_wait falha.
+            if (errno != EINTR) {
+                log_message("[IPC] ERROR acquiring SHM lock: %s", strerror(errno));
+            }
+        }
+    }
+}
+
+void shm_unlock() {
+    if (stats != NULL) {
+        if (sem_post(&stats->shm_mutex) == -1) {
+            log_message("[IPC] ERROR releasing SHM lock: %s", strerror(errno));
+        }
+    }
+}
+
 void cleanup_ipc(){
     log_message("[IPC] Cleaning up IPC resources...");
+
+    if (stats != NULL) {
+        if (sem_destroy(&stats->shm_mutex) == -1) {
+            log_message("[IPC] ERROR destroying SHM mutex: %s", strerror(errno));
+        }
+    }
 
     detach_shared_memory();
 
@@ -85,4 +122,33 @@ void cleanup_ipc(){
     unlink(PIPE_NAME);
     log_message("[IPC] Named pipe removed: %s", PIPE_NAME);
     log_message("[IPC] IPC cleanup complete.");
+}
+
+void display_statistics() {
+    // 1. BLOQUEAR O SEMÁFORO: Garante acesso exclusivo à SHM para leitura
+    shm_lock();
+
+    if (stats == NULL) {
+        log_message("WARNING: Cannot display statistics. Shared Memory (SHM) not initialized.");
+        shm_unlock();
+        return;
+    }
+
+    // 2. LER E APRESENTAR ESTATÍSTICAS (SECÇÃO CRÍTICA)
+    log_message("--- EMERGENCY SYSTEM STATISTICS ---");
+    log_message("Pacients Triaged: %d", stats->triaged);
+    log_message("Pacients Attended: %d", stats->attended);
+
+    if (stats->attended > 0) {
+        // Estes campos devem ser adicionados à estrutura Statistics!
+        log_message("Average Triage Time: %.2f", (double)stats->total_triage_time / stats->attended);
+        log_message("Average Wait Time: %.2f", (double)stats->total_wait_time / stats->attended);
+        log_message("Average Attend Time: %.2f", (double)stats->total_attend_time / stats->attended);
+    } else {
+        log_message("Average times unavailable (no patients attended).");
+    }
+    log_message("-----------------------------------");
+
+    // 3. DESBLOQUEAR O SEMÁFORO
+    shm_unlock();
 }
