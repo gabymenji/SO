@@ -28,8 +28,7 @@ void doctor_process(int id, int is_temporary, int shift_length) {
     // Se as prioridades estiverem entre 1 e 3 (Prio mais alta=1), -3 garante a mais alta.
     long priority_selector = -(long)3;
 
-	// Se for normal, block até receber uma mensagem
-    int msgrcv_flags = is_temporary ? IPC_NOWAIT : 0;
+    int msgrcv_flags = IPC_NOWAIT;
 
     while (1) {
 
@@ -41,25 +40,29 @@ void doctor_process(int id, int is_temporary, int shift_length) {
 
         if (msgrcv(msq_id, &msg, sizeof(Patient), priority_selector, msgrcv_flags) == -1) {
 
-            // Terminação para Doctor TEMPORÁRIO quando a fila está vazia
-            if (is_temporary && errno == ENOMSG) {
-                log_message("[DOCTOR %d] Temporary doctor finished processing backlog (MSQ empty). Terminating.", id);
-                break;
-            }
+    		if (errno == ENOMSG) {
 
-            // Terminação por Fila Removida
-            if (errno == EIDRM) {
-                log_message("[DOCTOR %d] MSQ removed. Terminating.", id);
-                break;
-            }
+        		if (is_temporary) {
+            		log_message("[DOCTOR %d] Temporary doctor finished processing backlog (MSQ empty). Terminating.", id);
+            		break;
+        		}
 
-            if (errno == EINTR) {
-                continue;
-            }
+        		usleep(100000); // 100 ms
+        		continue;
+    		}
 
-            log_message("[DOCTOR %d] ERROR msgrcv: %s", id, strerror(errno));
-            exit(1);
-        }
+    		if (errno == EIDRM || errno == EINVAL) {
+        		log_message("[DOCTOR %d] MSQ removed or invalid. Terminating.", id);
+        		break;
+    		}
+
+    		if (errno == EINTR) {
+        		continue;
+    		}
+
+    		log_message("[DOCTOR %d] ERROR msgrcv: %s", id, strerror(errno));
+    		exit(1);
+		}
 
         Patient p = msg.patient;
         p.attend_start_time_ms = now_ms();
@@ -92,21 +95,27 @@ void doctor_process(int id, int is_temporary, int shift_length) {
     }
 }
 
+
+pid_t spawn_single_doctor(int id, int shift_length) {
+    pid_t pid = fork();
+
+    if (pid < 0) {
+        log_message("[DOCTOR] ERROR fork: %s", strerror(errno));
+        return -1;
+    }
+
+    if (pid == 0) {
+        doctor_process(id, 0, shift_length);
+        _exit(0);
+    }
+
+    log_message("[DOCTOR] Created initial doctor %d with PID %d", id, pid);
+    return pid;
+}
+
+
 void spawn_doctors(int n, int shift_length){
-    for (int i=0; i < n; i++){
-        pid_t pid = fork();
-
-        if (pid < 0){
-            log_message("[DOCTOR] ERROR fork: %s", strerror(errno));
-            exit(1);
-        }
-
-        if (pid == 0){
-   			// Processo filho
-            doctor_process(i, 0, shift_length);
-            _exit(0);
-        }
-		// Processo pai
-        log_message("[DOCTOR] Created initial doctor %d with PID %d", i, pid);
+    for (int i = 0; i < n; i++) {
+        spawn_single_doctor(i, shift_length);
     }
 }

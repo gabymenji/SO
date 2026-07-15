@@ -16,15 +16,43 @@
 #include "log.h"
 #include "signals.h"
 
+#define MAX_DOCTORS 100
 
 extern volatile sig_atomic_t server_running;
+extern volatile sig_atomic_t sigusr1_received;
 
-void wait_for_doctors(int num_doctors) {
+pid_t doctor_pids[MAX_DOCTORS];
+int doctor_ids[MAX_DOCTORS];
+int normal_doctor_count = 0;
+int global_shift_length = 0;
+
+
+void start_normal_doctors(int n, int shift_length) {
+	if (n > MAX_DOCTORS) {
+		log_message("[ADMISSION] ERROR: Too many doctors configured (%d). Max is %d.", n, MAX_DOCTORS);
+		n = MAX_DOCTORS;
+	}
+
+	normal_doctor_count = n;
+	global_shift_length = shift_length;
+
+	for (int i = 0; i < n; i++) {
+		doctor_ids[i] = i;
+		doctor_pids[i] = spawn_single_doctor(i, shift_length);
+
+		if (doctor_pids[i] == -1) {
+			log_message("[ADMISSION] ERROR creating normal Doctor %d.", i);
+		}
+	}
+}
+
+
+void wait_for_doctors(void) {
 
     int status;
     pid_t wpid;
 
-    log_message("Waiting for %d Doctor processes to finish...", num_doctors);
+    log_message("Waiting for Doctor processes to finish...");
 
     // pode-se enviar SIGTERM aos Doctors que não acabarem o paciente a tempo, mas por agora, apenas esperamos.
     while ((wpid = waitpid(-1, &status, 0)) > 0) {
@@ -42,17 +70,49 @@ void wait_for_doctors(int num_doctors) {
 }
 
 void wait_for_finished_doctors() {
-    int status;
-    pid_t wpid;
+	int status;
+	pid_t wpid;
 
-    // WNOHANG: Garante que waitpid retorna 0 imediatamente se não houver filhos para recolher.
-    while ((wpid = waitpid(-1, &status, WNOHANG)) > 0) {
-        if (WIFEXITED(status)) {
-            log_message("[ADMISSION] Collected Doctor process %d (status=%d).", wpid, WEXITSTATUS(status));
-        } else if (WIFSIGNALED(status)) {
-            log_message("[ADMISSION] Collected Doctor process %d terminated by signal %d.", wpid, WTERMSIG(status));
-        }
-    }
+	while ((wpid = waitpid(-1, &status, WNOHANG)) > 0) {
+
+		int was_normal_doctor = 0;
+		int doctor_index = -1;
+
+		for (int i = 0; i < normal_doctor_count; i++) {
+			if (doctor_pids[i] == wpid) {
+				was_normal_doctor = 1;
+				doctor_index = i;
+				break;
+			}
+		}
+
+		if (WIFEXITED(status)) {
+			log_message("[ADMISSION] Collected Doctor process %d (status=%d).",
+						wpid, WEXITSTATUS(status));
+		} else if (WIFSIGNALED(status)) {
+			log_message("[ADMISSION] Collected Doctor process %d terminated by signal %d.",
+						wpid, WTERMSIG(status));
+		}
+
+		if (was_normal_doctor && server_running) {
+			int doctor_id = doctor_ids[doctor_index];
+
+			log_message("[ADMISSION] Normal Doctor %d ended shift. Creating replacement.",
+						doctor_id);
+
+			pid_t new_pid = spawn_single_doctor(doctor_id, global_shift_length);
+
+			if (new_pid != -1) {
+				doctor_pids[doctor_index] = new_pid;
+				log_message("[ADMISSION] Replacement Doctor %d created with PID %d.",
+							doctor_id, new_pid);
+			} else {
+				doctor_pids[doctor_index] = -1;
+				log_message("[ADMISSION] ERROR creating replacement for Doctor %d.",
+							doctor_id);
+			}
+		}
+	}
 }
 
 // Assume que doctor_process(int id) existe e o doctor sabe como morrer (ponto 4).
@@ -70,6 +130,49 @@ void spawn_temporary_doctor(int id, int shift_length) {
     log_message("[ADMISSION] Created TEMPORARY Doctor (ID: %d, PID: %d) due to high MSQ load.", id, pid);
     // Não precisamos de armazenar o PID, ele será recolhido por wait_for_finished_doctors.
 }
+
+
+void remove_message_queue_for_shutdown() {
+	if (msq_id != -1) {
+		if (msgctl(msq_id, IPC_RMID, NULL) == -1) {
+			log_message("[ADMISSION] ERROR removing MSQ during shutdown: %s", strerror(errno));
+		} else {
+			log_message("[ADMISSION] Message Queue removed to unblock Doctors.");
+			msq_id = -1;
+		}
+	}
+}
+
+
+void wait_until_msq_empty() {
+	struct msqid_ds msq_info;
+
+	log_message("[ADMISSION] Waiting for Message Queue to become empty...");
+
+	while (1) {
+		if (msgctl(msq_id, IPC_STAT, &msq_info) == -1) {
+			if (errno == EIDRM || errno == EINVAL) {
+				log_message("[ADMISSION] MSQ already removed.");
+				break;
+			}
+
+			log_message("[ADMISSION] ERROR reading MSQ status during shutdown: %s", strerror(errno));
+			break;
+		}
+
+		if (msq_info.msg_qnum == 0) {
+			log_message("[ADMISSION] Message Queue is empty.");
+			break;
+		}
+
+		log_message("[ADMISSION] Waiting... MSQ still has %lu patients.", msq_info.msg_qnum);
+
+		wait_for_finished_doctors();
+
+		usleep(100000);
+	}
+}
+
 
 int main(){
     printf("==== Admission: Starting Server ====\n");
@@ -108,7 +211,7 @@ int main(){
 
 	//Criação das threads e dos Doctors
     start_triage_threads(cfg.TRIAGE);
-	spawn_doctors(cfg.DOCTORS, cfg.SHIFT_LENGTH);
+	start_normal_doctors(cfg.DOCTORS, cfg.SHIFT_LENGTH);
 
     log_message("Server running... Waiting for SIGINT to stop.");
 
@@ -131,6 +234,13 @@ int main(){
 
 	// Enquanto o servidor continua ativo
     while (server_running) {
+
+    	if (sigusr1_received) {
+    		sigusr1_received = 0;
+    		log_message("SIGUSR1 received. Printing statistics...");
+    		display_statistics();
+    	}
+
         fd_set readfds;
         FD_ZERO(&readfds);
         FD_SET(fd, &readfds);
@@ -147,7 +257,6 @@ int main(){
 		wait_for_finished_doctors();
         if (activity == -1) {
             if (errno == EINTR) {
-                // select() foi interrompido por um sinal (SIGINT/SIGUSR1).
                 continue;
             }
             // Erro crítico.
@@ -207,6 +316,10 @@ int main(){
                     		// Incremento para cada paciente criado
                     		pat.num_arrival = ++arrival_counter;
                     		pat.arrival_time_ms = arrival_time_ms;
+                			pat.triage_start_time_ms = 0;
+                			pat.triage_end_time_ms = 0;
+                			pat.attend_start_time_ms = 0;
+                			pat.attend_end_time_ms = 0;
 
                     		if (queue_push(&triage_queue, &pat) == 0){
                         		log_message("Pacient %s (Group) entered the triage queue (ID: %d).", pat.name, pat.num_arrival);
@@ -229,6 +342,10 @@ int main(){
 							pat.num_arrival = ++arrival_counter;
 
                     		pat.arrival_time_ms = now_ms();
+							pat.triage_start_time_ms = 0;
+							pat.triage_end_time_ms = 0;
+							pat.attend_start_time_ms = 0;
+							pat.attend_end_time_ms = 0;
 
                         	if (queue_push(&triage_queue, &pat) == 0){
                             	log_message("Pacient %s entered the triage queue.", pat.name);
@@ -251,11 +368,15 @@ int main(){
         }
     }
 
-    log_message("Admission Server received shutdown request. Starting cleanup.");
+	log_message("SIGINT received. Starting graceful shutdown.");
+	log_message("Admission Server stopped accepting new patients.");
 
     close(fd); // Fechar o input_pipe
     stop_triage_threads();
-    wait_for_doctors(cfg.DOCTORS);
+	log_message("[ADMISSION] All triage threads finished.");
+	wait_until_msq_empty();
+	remove_message_queue_for_shutdown();
+    wait_for_doctors();
     cleanup_ipc();
 
     log_message("Admission Server terminated successfully.");

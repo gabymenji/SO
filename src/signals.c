@@ -7,17 +7,17 @@
 
 // Variável global para controlar o loop principal (inicialmente 1 = running)
 volatile sig_atomic_t server_running = 1;
+volatile sig_atomic_t sigusr1_received = 0;
 
 void handle_sigint(int signum) {
     if (signum == SIGINT) {
-        log_message("SIGINT received. Starting graceful shutdown...");
         server_running = 0;
     }
 }
 
 void handle_sigusr1(int signum) {
     if (signum == SIGUSR1) {
-        log_message("SIGUSR1 received. Printing statistics...");
+        sigusr1_received = 1;
 
         // display_statistics();
     }

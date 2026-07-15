@@ -89,7 +89,7 @@ void *triage_worker(void *arg){
     log_message("[TRIAGE %d] Thread started.", id);
 
     Patient p;
-    while(triage_running){
+    while(1){
         if (queue_pop(&triage_queue, &p) == 0){
 
             // Tempo de início da triagem
@@ -98,7 +98,7 @@ void *triage_worker(void *arg){
             // Tempo de Espera (Wait Time)
             long long wait_before_triage_ms = p.triage_start_time_ms - p.arrival_time_ms;
 
-            log_message("[TRIAGE %d] START Triaging patient %s (ID: %d, Wait: %ld s, Triage Time: %d ms).", id, p.name, p.num_arrival, wait_time, p.triage_time);
+            log_message("[TRIAGE %d] START Triaging patient %s (ID: %d, Wait: %ld s, Triage Time: %d ms).", id, p.name, p.num_arrival, wait_before_triage_ms, p.triage_time);
 
             // Simula o tempo de triagem (bloqueio da thread)
             usleep(p.triage_time * 1000);
@@ -110,7 +110,7 @@ void *triage_worker(void *arg){
 
             if (stats != NULL){
                 stats->triaged++;
-				stats->total_wait_before_triage_ms += wait_time_ms;
+				stats->total_wait_before_triage_ms += wait_before_triage_ms;
             }
 
             shm_unlock();
