@@ -41,10 +41,7 @@ int log_init(){
     return 0;
 }
 
-/**
- * Escreve uma mensagem no ecrã e no MMF, precedida pela data/hora.
- * Deve ser chamado por todos os processos/threads.
- */
+
 void log_message(const char *format, ...){
     pthread_mutex_lock(&log_mutex);
 

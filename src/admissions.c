@@ -55,7 +55,6 @@ void wait_for_finished_doctors() {
     }
 }
 
-// NOVO: Função para criar um Doctor temporário.
 // Assume que doctor_process(int id) existe e o doctor sabe como morrer (ponto 4).
 void spawn_temporary_doctor(int id, int shift_length) {
     pid_t pid = fork();
@@ -65,7 +64,7 @@ void spawn_temporary_doctor(int id, int shift_length) {
     }
     if (pid == 0) {
         // Processo Filho (Doctor)
-        doctor_process(id, shift_length);
+        doctor_process(id, 1, shift_length);
         _exit(0);
     }
     log_message("[ADMISSION] Created TEMPORARY Doctor (ID: %d, PID: %d) due to high MSQ load.", id, pid);
@@ -81,6 +80,7 @@ int main(){
         return 1;
     }
 
+	//Cria e mapeia o ficheiro log
     if (log_init() != 0){
         fprintf(stderr, "Error initializing log. Exiting.\n");
         return 1;
@@ -94,6 +94,7 @@ int main(){
     log_message("SHIFT_LENGTH: %d", cfg.SHIFT_LENGTH);
     log_message("MSQ_WAIT_MAX: %d", cfg.MSQ_WAIT_MAX);
 
+	//Criação dos recursos do sistema
     setup_signal_handlers();
     create_named_pipe();
     create_message_queue();
@@ -105,17 +106,20 @@ int main(){
         return 1;
     }
 
+	//Criação das threads e dos Doctors
     start_triage_threads(cfg.TRIAGE);
-
-    spawn_doctors(cfg.DOCTORS, cfg.SHIFT_LENGTH);
+	spawn_doctors(cfg.DOCTORS, cfg.SHIFT_LENGTH);
 
     log_message("Server running... Waiting for SIGINT to stop.");
-	int arrival_counter = 0;
 
+	//Número sequencial para cada paciente
+	int arrival_counter = 0;
+	//Para atribuir a Doctors temporários, depois dos Doctors normais
 	int next_temp_doctor_id = cfg.DOCTORS;
 
 	struct msqid_ds msq_info;
 
+	// Abre o input_pipe para leitura
     int fd = open(PIPE_NAME, O_RDONLY);
     if (fd == -1){
         log_message("ERROR opening input_pipe: %s", strerror(errno));
@@ -125,6 +129,7 @@ int main(){
 
     char line[256];
 
+	// Enquanto o servidor continua ativo
     while (server_running) {
         fd_set readfds;
         FD_ZERO(&readfds);
@@ -138,7 +143,7 @@ int main(){
 		timeout.tv_usec = 0;
 
         // select() espera 1 segundo ou por I/O/sinal
-        int activity = select(max_fd, &readfds, NULL, NULL, &timeout);
+        int activity = select(max_fd, &readfds, NULL, NULL, &timeout); // Para n ficar bloqueado permanentemente no read()
 		wait_for_finished_doctors();
         if (activity == -1) {
             if (errno == EINTR) {
@@ -154,13 +159,12 @@ int main(){
 		if (activity == 0) {
             // Se o timeout expirou (atividade=0), verificar a MSQ.
             if (msgctl(msq_id, IPC_STAT, &msq_info) != -1) {
-                // msg_qnum é o número de mensagens na fila
-                if (msq_info.msg_qnum > cfg.MSQ_WAIT_MAX) {
+                // Se o número de mensagens na MSQ exceder MSQ_WAIT_MAX, criar um Doctor temporário.
+                if (msq_info.msg_qnum > (unsigned long)cfg.MSQ_WAIT_MAX) {
 
-                    log_message("[ADMISSION] HIGH LOAD: MSQ count (%lu) > WAIT_MAX (%d). Spawning temporary doctor.",
-                                msq_info.msg_qnum, cfg.MSQ_WAIT_MAX);
+                    log_message("[ADMISSION] HIGH LOAD: MSQ count (%lu) > WAIT_MAX (%d). Spawning temporary doctor.",msq_info.msg_qnum, cfg.MSQ_WAIT_MAX);
 
-                    // Passar SHIFT_LENGTH na criação
+                    // Criar um Doctor temporário
                     spawn_temporary_doctor(next_temp_doctor_id++, cfg.SHIFT_LENGTH);
                 }
             } else {
@@ -170,30 +174,29 @@ int main(){
 
         if (activity > 0) {
             if (FD_ISSET(fd, &readfds)) {
-
+				// Leitura de pacientes do input_pipe
                 ssize_t bytes_read = read(fd, line, sizeof(line) - 1);
 
                 if (bytes_read > 0) {
 
                     line[bytes_read] = '\0';
 
-                    int t, a, pr;
-
+                    int t, a, pr; // Tempo de triagem, atendimento e prioridade
 					int num_patients;
 					int success = 0;
 
                     if (sscanf(line, "%d %d %d %d", &num_patients, &t, &a, &pr) == 4 && num_patients > 0){
 						log_message("Received Group Command: %d patients (T: %d, A: %d, P: %d).", num_patients, t, a, pr);
 
-						time_t arrival_time = time(NULL); // O grupo chega no mesmo instante
+						long long arrival_time_ms = now_ms(); // O grupo chega no mesmo instante
 						int current_group_base_id = arrival_counter + 1;
 
-                		// LOOP OBRIGATÓRIO: Criar e inserir cada paciente do grupo
+                		// Criar e inserir cada paciente do grupo
                 		for (int i = 1; i <= num_patients; i++) {
                     		Patient pat;
                     		char group_name[64];
 
-                    		// NOME ÚNICO: Gerar nome sequencial (ex: GRP_12_1, GRP_12_2)
+                    		// Gerar nome sequencial (ex: GRP_12_1, GRP_12_2)
                     		snprintf(group_name, sizeof(group_name), "GRP_%d_%d", current_group_base_id, i);
 
                     		strcpy(pat.name, group_name);
@@ -203,7 +206,7 @@ int main(){
 
                     		// Incremento para cada paciente criado
                     		pat.num_arrival = ++arrival_counter;
-                    		pat.arrival_time = arrival_time;
+                    		pat.arrival_time_ms = arrival_time_ms;
 
                     		if (queue_push(&triage_queue, &pat) == 0){
                         		log_message("Pacient %s (Group) entered the triage queue (ID: %d).", pat.name, pat.num_arrival);
@@ -225,7 +228,7 @@ int main(){
 
 							pat.num_arrival = ++arrival_counter;
 
-                    		pat.arrival_time = time(NULL); // A função time() retorna o tempo atual
+                    		pat.arrival_time_ms = now_ms();
 
                         	if (queue_push(&triage_queue, &pat) == 0){
                             	log_message("Pacient %s entered the triage queue.", pat.name);
@@ -250,7 +253,7 @@ int main(){
 
     log_message("Admission Server received shutdown request. Starting cleanup.");
 
-    close(fd);
+    close(fd); // Fechar o input_pipe
     stop_triage_threads();
     wait_for_doctors(cfg.DOCTORS);
     cleanup_ipc();

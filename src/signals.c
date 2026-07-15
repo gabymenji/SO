@@ -18,10 +18,7 @@ void handle_sigint(int signum) {
 void handle_sigusr1(int signum) {
     if (signum == SIGUSR1) {
         log_message("SIGUSR1 received. Printing statistics...");
-        // A impressão das estatísticas deve ser feita aqui,
-        // lendo a SHM (stats) de forma sincronizada.
 
-        // POR FAZER: IMPLEMENTAR FUNÇÃO PARA LER SHM E IMPRIMIR
         // display_statistics();
     }
 }
@@ -47,7 +44,6 @@ void setup_signal_handlers() {
         exit(1);
     }
 
-    // NOTA: Os sinais não especificados devem ser ignorados.
     // Opcional, mas recomendado:
     // signal(SIGPIPE, SIG_IGN);
 }

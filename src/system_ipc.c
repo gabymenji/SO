@@ -7,6 +7,7 @@
 #include <unistd.h>
 #include <string.h>
 #include <semaphore.h>
+#include <time.h>
 #include "system_ipc.h"
 #include "patient.h"
 #include "log.h"
@@ -16,6 +17,17 @@ int shm_id = -1;
 Statistics *stats = NULL;
 
 int msq_id = -1;
+
+
+long long now_ms(void) {
+    struct timespec ts;
+
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) == -1) {
+        return -1;
+    }
+
+    return (long long)ts.tv_sec * 1000LL + ts.tv_nsec / 1000000LL;
+}
 
 void create_named_pipe(){
     if (mkfifo(PIPE_NAME, 0666) == -1){
@@ -49,10 +61,10 @@ void create_shared_memory(){
     }
 
     stats->triaged = 0;
-    stats->attended = 0;
-    stats->total_triage_time = 0;
-    stats->total_wait_time = 0;
-    stats->total_attend_time = 0;
+	stats->attended = 0;
+	stats->total_wait_before_triage_ms = 0;
+	stats->total_wait_after_triage_ms = 0;
+	stats->total_system_time_ms = 0;
 
     log_message("[IPC] Shared memory created with ID: %d", shm_id);
 }
@@ -76,7 +88,6 @@ void detach_shared_memory(){
 void shm_lock() {
     if (stats != NULL) {
         if (sem_wait(&stats->shm_mutex) == -1) {
-            // Em caso de interrupção (ex: SIGINT), o sem_wait falha.
             if (errno != EINTR) {
                 log_message("[IPC] ERROR acquiring SHM lock: %s", strerror(errno));
             }
@@ -125,7 +136,7 @@ void cleanup_ipc(){
 }
 
 void display_statistics() {
-    // 1. BLOQUEAR O SEMÁFORO: Garante acesso exclusivo à SHM para leitura
+
     shm_lock();
 
     if (stats == NULL) {
@@ -134,21 +145,29 @@ void display_statistics() {
         return;
     }
 
-    // 2. LER E APRESENTAR ESTATÍSTICAS (SECÇÃO CRÍTICA)
+    // Ler e exibir as estatísticas
     log_message("--- EMERGENCY SYSTEM STATISTICS ---");
-    log_message("Pacients Triaged: %d", stats->triaged);
-    log_message("Pacients Attended: %d", stats->attended);
+    log_message("Patients Triaged: %d", stats->triaged);
+    log_message("Patients Attended: %d", stats->attended);
+
+    if (stats->triaged > 0) {
+        log_message("Average waiting time before triage: %.2f ms",
+                    (double)stats->total_wait_before_triage_ms / stats->triaged);
+    } else {
+        log_message("Average waiting time before triage: unavailable (no patients triaged).");
+    }
 
     if (stats->attended > 0) {
-        // Estes campos devem ser adicionados à estrutura Statistics!
-        log_message("Average Triage Time: %.2f", (double)stats->total_triage_time / stats->attended);
-        log_message("Average Wait Time: %.2f", (double)stats->total_wait_time / stats->attended);
-        log_message("Average Attend Time: %.2f", (double)stats->total_attend_time / stats->attended);
+        log_message("Average waiting time between triage and attendance: %.2f ms",
+                    (double)stats->total_wait_after_triage_ms / stats->attended);
+
+        log_message("Average total time in system: %.2f ms",
+                    (double)stats->total_system_time_ms / stats->attended);
     } else {
-        log_message("Average times unavailable (no patients attended).");
+        log_message("Average waiting time between triage and attendance: unavailable (no patients attended).");
+        log_message("Average total time in system: unavailable (no patients attended).");
     }
     log_message("-----------------------------------");
 
-    // 3. DESBLOQUEAR O SEMÁFORO
     shm_unlock();
 }

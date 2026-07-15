@@ -19,7 +19,7 @@ typedef struct {
 
 void doctor_process(int id, int is_temporary, int shift_length) {
 
-    time_t start_time = time(NULL);
+    long long start_time_ms = now_ms();
 
     log_message("[DOCTOR %d] Started (PID=%d). Type: %s. Shift Time: %d s.", id, getpid(), is_temporary ? "TEMPORARY" : "INITIAL", shift_length);
 
@@ -28,12 +28,13 @@ void doctor_process(int id, int is_temporary, int shift_length) {
     // Se as prioridades estiverem entre 1 e 3 (Prio mais alta=1), -3 garante a mais alta.
     long priority_selector = -(long)3;
 
+	// Se for normal, block até receber uma mensagem
     int msgrcv_flags = is_temporary ? IPC_NOWAIT : 0;
 
     while (1) {
 
         // Terminação por Duração do Turno
-        if (shift_length > 0 && (time(NULL) - start_time) >= shift_length) {
+        if (shift_length > 0 && (now_ms() - start_time_ms) >= shift_length * 1000LL) {
             log_message("[DOCTOR %d] Shift ended (%d seconds). Terminating.", id, shift_length);
             break;
         }
@@ -61,28 +62,33 @@ void doctor_process(int id, int is_temporary, int shift_length) {
         }
 
         Patient p = msg.patient;
-        time_t attend_start_time = time(NULL);
+        p.attend_start_time_ms = now_ms();
+
+		long long wait_after_triage_ms = p.attend_start_time_ms - p.triage_end_time_ms;
 
         log_message("[DOCTOR %d] START Attending. Patient %s (ID: %d, Prio: %d, Time: %d ms)", id, p.name, p.num_arrival, p.priority, p.attend_time);
 
         // Simulate attending the patient
         usleep(p.attend_time * 1000);
 
-        time_t attend_end_time = time(NULL);
+        p.attend_end_time_ms = now_ms();
+
+		long long system_time_ms = p.attend_end_time_ms - p.arrival_time_ms;
 
         // Cálculo de tempo e atualização de stats
-        long attend_duration = attend_end_time - attend_start_time;
+        long long attend_duration_ms = p.attend_end_time_ms - p.attend_start_time_ms;
 
         shm_lock();
 
         if (stats != NULL) {
             stats->attended++;
-            stats->total_attend_time += attend_duration;
+            stats->total_wait_after_triage_ms += wait_after_triage_ms;
+    		stats->total_system_time_ms += system_time_ms;
         }
 
         shm_unlock();
 
-        log_message("[DOCTOR %d] Finished %s. Duration: %ld s.", id, p.name, attend_duration);
+        log_message("[DOCTOR %d] Finished %s. Attend duration: %lld ms. Total system time: %lld ms.", id, p.name, attend_duration_ms, system_time_ms);
     }
 }
 
@@ -96,9 +102,11 @@ void spawn_doctors(int n, int shift_length){
         }
 
         if (pid == 0){
+   			// Processo filho
             doctor_process(i, 0, shift_length);
             _exit(0);
         }
+		// Processo pai
         log_message("[DOCTOR] Created initial doctor %d with PID %d", i, pid);
     }
 }

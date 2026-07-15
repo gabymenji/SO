@@ -49,7 +49,7 @@ void queue_destroy(TriageQueue *q){
 int queue_push(TriageQueue *q, const Patient *p){
     pthread_mutex_lock(&q->mutex);
     if (q->count == q->max_size){
-        // Queue full: returns error( Admission should register and descard)
+        // Queue full
         pthread_mutex_unlock(&q->mutex);
         return -1;
     }
@@ -67,10 +67,11 @@ int queue_push(TriageQueue *q, const Patient *p){
 int queue_pop(TriageQueue *q, Patient *out){
     pthread_mutex_lock(&q->mutex);
     while (q->count == 0 && triage_running){
+		// Fila vazia, espera até que haja um item
         pthread_cond_wait(&q->not_empty, &q->mutex);
     }
     if (q->count == 0 && !triage_running){
-        //We are finishing
+        // Fila vazia e triagem encerrada
         pthread_mutex_unlock(&q->mutex);
         return -1;
     }
@@ -91,23 +92,25 @@ void *triage_worker(void *arg){
     while(triage_running){
         if (queue_pop(&triage_queue, &p) == 0){
 
-            // Obter o tempo de início da triagem
-            time_t triage_start_time = time(NULL);
+            // Tempo de início da triagem
+            p.triage_start_time_ms = now_ms();
 
-            // Calcular o Tempo de Espera (Wait Time)
-            long wait_time = triage_start_time - p.arrival_time;
+            // Tempo de Espera (Wait Time)
+            long long wait_before_triage_ms = p.triage_start_time_ms - p.arrival_time_ms;
 
             log_message("[TRIAGE %d] START Triaging patient %s (ID: %d, Wait: %ld s, Triage Time: %d ms).", id, p.name, p.num_arrival, wait_time, p.triage_time);
 
             // Simula o tempo de triagem (bloqueio da thread)
             usleep(p.triage_time * 1000);
 
+			p.triage_end_time_ms = now_ms();
+
             // SINCRONIZAÇÃO E ATUALIZAÇÃO DE ESTATÍSTICAS
             shm_lock();
 
             if (stats != NULL){
                 stats->triaged++;
-                stats->total_wait_time += wait_time;
+				stats->total_wait_before_triage_ms += wait_time_ms;
             }
 
             shm_unlock();
